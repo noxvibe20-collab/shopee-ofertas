@@ -1,0 +1,48 @@
+require('dotenv').config();
+const express=require('express');
+const session=require('express-session');
+const helmet=require('helmet');
+const Database=require('better-sqlite3');
+const slugify=require('slugify');
+const path=require('path');
+const fs=require('fs');
+
+const app=express();
+const PORT=process.env.PORT||3000;
+const SITE_URL=(process.env.SITE_URL||'http://localhost:'+PORT).replace(/\/$/,'');
+const DATA_DIR=process.env.DATA_DIR||path.join(__dirname,'data');
+fs.mkdirSync(DATA_DIR,{recursive:true});
+const db=new Database(path.join(DATA_DIR,'products.sqlite'));
+db.pragma('journal_mode = WAL');
+db.exec(`CREATE TABLE IF NOT EXISTS products(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,slug TEXT NOT NULL UNIQUE,
+ affiliate_url TEXT NOT NULL,image_url TEXT DEFAULT '',price TEXT DEFAULT '',
+ category TEXT DEFAULT '',description TEXT DEFAULT '',seo_description TEXT DEFAULT '',
+ published INTEGER DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)`);
+const all=db.prepare('SELECT * FROM products ORDER BY id DESC');
+const published=db.prepare('SELECT * FROM products WHERE published=1 ORDER BY id DESC');
+const bySlug=db.prepare('SELECT * FROM products WHERE slug=? AND published=1');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const slug=s=>slugify(String(s||''),{lower:true,strict:true,trim:true})||'produto';
+app.use(helmet({contentSecurityPolicy:false}));
+app.use(express.urlencoded({extended:false,limit:'1mb'}));
+app.use(express.json({limit:'1mb'}));
+app.use(session({secret:process.env.SESSION_SECRET||'development-only-change-me',resave:false,saveUninitialized:false,cookie:{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:8*60*60*1000}}));
+app.use(express.static(path.join(__dirname,'public')));
+function page(title,desc,body){return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><meta name="description" content="${esc(desc)}"><meta name="robots" content="index,follow"><link rel="canonical" href="${SITE_URL}${esc(body.startsWith('<main class="detail"')?'':'/')}"><meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(desc)}"><link rel="stylesheet" href="/style.css"></head><body><header><a class="brand" href="/">Shopee <b>Ofertas</b></a><form action="/" class="search"><input name="q" placeholder="Buscar achadinhos..."><button>Buscar</button></form><a class="admin-link" href="/admin">Painel</a></header>${body}<footer><b>Shopee Ofertas</b><p>Site independente de ofertas e achadinhos. Este site pode conter links de afiliados e receber comissão por compras qualificadas, sem custo adicional.</p></footer></body></html>`;}
+function card(p){return `<article class="card"><a class="thumb" href="/produto/${esc(p.slug)}">${p.image_url?`<img loading="lazy" src="${esc(p.image_url)}" alt="${esc(p.title)}">`:'🛍️'}</a><div class="card-content"><small>${esc(p.category||'Achadinho')}</small><h2><a href="/produto/${esc(p.slug)}">${esc(p.title)}</a></h2><p>${esc(p.description||p.seo_description)}</p>${p.price?`<strong class="price">${esc(p.price)}</strong>`:''}<a class="buy" href="${esc(p.affiliate_url)}" target="_blank" rel="nofollow sponsored noopener">Ver oferta ↗</a></div></article>`;}
+function auth(req,res,next){if(!req.session.admin)return res.redirect('/admin/login');next();}
+function form(req){const title=String(req.body.title||'').trim(),url=String(req.body.affiliate_url||'').trim();try{const u=new URL(url);if(!['http:','https:'].includes(u.protocol))throw 0;}catch{return null;}if(!title)return null;return {title,slug:slug(req.body.slug||title),affiliate_url:url,image_url:String(req.body.image_url||''),price:String(req.body.price||''),category:String(req.body.category||''),description:String(req.body.description||''),seo_description:String(req.body.seo_description||''),published:req.body.published==='1'?1:0};}
+function productForm(p={}){return `<form class="product-form" method="post" action="${p.id?'/admin/product/'+p.id:'/admin/product'}"><label>Link de afiliado *<input name="affiliate_url" type="url" required value="${esc(p.affiliate_url)}"></label><label>Nome do produto *<input name="title" required value="${esc(p.title)}"></label><label>Slug / URL<input name="slug" value="${esc(p.slug)}"></label><label>Categoria<input name="category" value="${esc(p.category)}"></label><label>Preço<input name="price" placeholder="R$ 39,90" value="${esc(p.price)}"></label><label>URL da imagem<input name="image_url" type="url" value="${esc(p.image_url)}"></label><label>Descrição<textarea name="description">${esc(p.description)}</textarea></label><label>Descrição SEO<textarea name="seo_description">${esc(p.seo_description)}</textarea></label><label class="check"><input type="checkbox" name="published" value="1" ${p.published===0?'':'checked'}> Publicar produto</label><button class="buy">Salvar produto</button></form>`;}
+app.get('/',(req,res)=>{const q=String(req.query.q||'').trim().toLowerCase();const items=published.all().filter(p=>!q||(p.title+' '+p.category+' '+p.description).toLowerCase().includes(q));const body=`<section class="hero"><p>ACHADINHOS • OFERTAS • NOVIDADES</p><h1>Encontre seu próximo <span>achadinho</span>.</h1><p>Ofertas selecionadas em tecnologia, casa, beleza e muito mais.</p></section><main><div class="heading"><h2>${q?'Resultados':'Ofertas e achadinhos'}</h2><span>${items.length} produto(s)</span></div><section class="grid">${items.map(card).join('')||'<p class="empty">Nenhum produto cadastrado ainda. Volte em breve!</p>'}</section></main>`;res.send(page('Shopee Ofertas | Achadinhos e ofertas','Encontre ofertas, promoções e achadinhos. Confira produtos selecionados e acesse pelos links de afiliado.',body));});
+app.get('/produto/:slug',(req,res)=>{const p=bySlug.get(req.params.slug);if(!p)return res.status(404).send(page('Produto não encontrado','Produto indisponível','<main class="empty">Produto não encontrado. <a href="/">Voltar</a></main>'));const desc=p.seo_description||p.description||'Confira este achadinho.';const body=`<main class="detail"><a href="/">← Voltar às ofertas</a><article class="detail-card"><div class="detail-image">${p.image_url?`<img src="${esc(p.image_url)}" alt="${esc(p.title)}">`:'🛍️'}</div><div><small>${esc(p.category)}</small><h1>${esc(p.title)}</h1><p>${esc(p.description)}</p>${p.price?`<strong class="price">${esc(p.price)}</strong>`:''}<a class="buy" href="${esc(p.affiliate_url)}" target="_blank" rel="nofollow sponsored noopener">Conferir oferta na Shopee ↗</a><p class="note">Link de afiliado: podemos receber comissão por compras qualificadas.</p></div></article></main><script type="application/ld+json">${JSON.stringify({'@context':'https://schema.org','@type':'Product',name:p.title,description:desc,image:p.image_url||undefined})}</script>`;res.send(page(p.title+' | Shopee Ofertas',desc,body));});
+app.get('/robots.txt',(req,res)=>res.type('text').send('User-agent: *\nAllow: /\nDisallow: /admin\nSitemap: '+SITE_URL+'/sitemap.xml\n'));
+app.get('/sitemap.xml',(req,res)=>{const urls=[SITE_URL+'/',...published.all().map(p=>SITE_URL+'/produto/'+p.slug)];res.type('application/xml').send('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+urls.map(u=>'<url><loc>'+esc(u)+'</loc></url>').join('')+'</urlset>');});
+app.get('/admin/login',(req,res)=>res.send(page('Entrar | Shopee Ofertas','Acesso administrativo',`<main class="admin-wrap"><form class="admin-form" method="post"><h1>Entrar no painel</h1><label>Usuário<input name="username" required></label><label>Senha<input type="password" name="password" required></label><button class="buy">Entrar</button></form></main>`)));
+app.post('/admin/login',(req,res)=>{if(req.body.username===(process.env.ADMIN_USERNAME||'admin')&&req.body.password===(process.env.ADMIN_PASSWORD||'change-this-password')){req.session.admin=true;return res.redirect('/admin');}res.redirect('/admin/login');});
+app.post('/admin/logout',auth,(req,res)=>req.session.destroy(()=>res.redirect('/')));
+app.get('/admin',auth,(req,res)=>{const rows=all.all();res.send(page('Painel | Shopee Ofertas','Gerenciar produtos',`<main class="admin-wrap"><div class="admin-top"><h1>Painel de produtos</h1><form method="post" action="/admin/logout"><button class="secondary">Sair</button></form></div><section class="admin-box"><h2>Adicionar produto</h2>${productForm({published:1})}</section><section class="admin-box"><h2>Produtos cadastrados</h2>${rows.map(p=>`<div class="admin-row"><span>${esc(p.title)} — ${p.published?'Publicado':'Rascunho'}</span><form method="post" action="/admin/product/${p.id}/delete"><button class="danger">Excluir</button></form></div>`).join('')||'Nenhum produto cadastrado.'}</section></main>`));});
+app.post('/admin/product',auth,(req,res)=>{const p=form(req);if(!p)return res.status(400).send('Confira o título e o link de afiliado.');try{db.prepare('INSERT INTO products(title,slug,affiliate_url,image_url,price,category,description,seo_description,published) VALUES(@title,@slug,@affiliate_url,@image_url,@price,@category,@description,@seo_description,@published)').run(p);}catch(e){return res.status(400).send('Não foi possível salvar. Verifique se o slug já existe.');}res.redirect('/admin');});
+app.post('/admin/product/:id/delete',auth,(req,res)=>{db.prepare('DELETE FROM products WHERE id=?').run(req.params.id);res.redirect('/admin');});
+app.listen(PORT,()=>console.log('Shopee Ofertas online na porta '+PORT));
