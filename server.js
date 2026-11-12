@@ -17,7 +17,7 @@ try{if(fs.existsSync(DATA_FILE))products=JSON.parse(fs.readFileSync(DATA_FILE,'u
 function save(){const tmp=DATA_FILE+'.tmp';fs.writeFileSync(tmp,JSON.stringify(products,null,2));fs.renameSync(tmp,DATA_FILE);}
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const slug=s=>slugify(String(s||''),{lower:true,strict:true,trim:true})||'produto';
-app.use(helmet({contentSecurityPolicy:false}));
+app.set('trust proxy',1); // Render termina HTTPS no proxy; necessario para cookies secure\napp.use(helmet({contentSecurityPolicy:false}));
 app.use(express.urlencoded({extended:false,limit:'1mb'}));
 app.use(express.json({limit:'1mb'}));
 app.use(session({secret:process.env.SESSION_SECRET||'development-only-change-me',resave:false,saveUninitialized:false,cookie:{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:8*60*60*1000}}));
